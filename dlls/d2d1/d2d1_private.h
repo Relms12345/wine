@@ -62,6 +62,13 @@ struct d2d_settings
 };
 extern struct d2d_settings d2d_settings;
 
+struct d2d_layer_stack
+{
+    struct d2d_layer **stack; // stack of pointers to the d2d_layer
+    size_t size;
+    size_t count;
+};
+
 struct d2d_clip_stack
 {
     D2D1_RECT_F *stack;
@@ -120,9 +127,11 @@ struct d2d_ps_cb
 {
     BOOL outline;
     BOOL is_arc;
-    BOOL pad[2];
+    BOOL is_tinted;
+    BOOL pad;
     struct d2d_brush_cb colour_brush;
     struct d2d_brush_cb opacity_brush;
+    D2D1_COLOR_F tint_colour;
 };
 
 struct d2d_vec4
@@ -218,7 +227,7 @@ struct d2d_device_context
 
     D2D1_RENDER_TARGET_PROPERTIES desc;
     D2D1_SIZE_U pixel_size;
-    struct d2d_clip_stack clip_stack;
+    struct d2d_layer_stack layer_stack;
 
     struct d2d_indexed_objects vertex_buffers;
 };
@@ -405,10 +414,20 @@ struct d2d_layer
     LONG refcount;
 
     ID2D1Factory *factory;
+
+    D2D1_LAYER_PARAMETERS1 params;
+    D2D1_SIZE_U pixel_size;
+    ID2D1Image *prev_target;
+    ID2D1Bitmap1 *offscreen_bitmap;
+
+    D2D1_MATRIX_3X2_F prev_transform;
+
     D2D1_SIZE_F size;
 };
 
 HRESULT d2d_layer_create(ID2D1Factory *factory, const D2D1_SIZE_F *size, struct d2d_layer **layer);
+struct d2d_layer *unsafe_impl_from_ID2D1Layer(ID2D1Layer *iface);
+
 
 struct d2d_mesh
 {
@@ -436,6 +455,10 @@ struct d2d_bitmap
     float dpi_x;
     float dpi_y;
     D2D1_BITMAP_OPTIONS options;
+
+    struct d2d_clip_stack clip_stack;
+    BOOL is_tinted;
+    D2D1_COLOR_F tint_colour;
 };
 
 HRESULT d2d_bitmap_create(struct d2d_device_context *context, D2D1_SIZE_U size, const void *src_data,
@@ -791,8 +814,11 @@ struct d2d_effect
     struct d2d_effect_context *effect_context;
     struct d2d_transform_graph *graph;
     ID2D1Image **inputs;
+    ID2D1Image *output;
     size_t inputs_size;
     size_t input_count;
+
+    CLSID effect_id;
 };
 
 HRESULT d2d_effect_create(struct d2d_device_context *context, const CLSID *effect_id,
@@ -808,6 +834,7 @@ void d2d_effect_properties_cleanup(struct d2d_effect_properties *props);
 HRESULT d2d_factory_register_builtin_effect(struct d2d_factory *factory, REFCLSID effect_id,
         const WCHAR *property_xml, const D2D1_PROPERTY_BINDING *bindings, UINT32 binding_count,
         PD2D1_EFFECT_FACTORY effect_factory);
+struct d2d_effect *unsafe_impl_from_ID2D1Effect(ID2D1Effect *iface);
 
 struct d2d_vertex_buffer
 {
@@ -889,6 +916,27 @@ void d2d_command_list_fill_opacity_mask(struct d2d_command_list *command_list, c
 void d2d_command_list_push_layer(struct d2d_command_list *command_list, const struct d2d_device_context *context,
         const D2D1_LAYER_PARAMETERS1 *params, ID2D1Layer *layer);
 void d2d_command_list_pop_layer(struct d2d_command_list *command_list);
+
+struct d2d_sprite
+{
+    D2D1_RECT_F destinationRect;
+    D2D1_RECT_U sourceRect;
+    D2D1_COLOR_F color;
+    D2D1_MATRIX_3X2_F transform;
+};
+
+struct d2d_sprite_batch
+{
+    ID2D1SpriteBatch ID2D1SpriteBatch_iface;
+    LONG refcount;
+    ID2D1Factory *factory;
+
+    UINT32 sprite_count;
+    
+    struct d2d_sprite* sprites;
+};
+HRESULT d2d_sprite_batch_create(ID2D1Factory *factory, struct d2d_sprite_batch **sprite_batch);
+struct d2d_sprite_batch *unsafe_impl_from_ID2D1SpriteBatch(ID2D1SpriteBatch *iface);
 
 static inline BOOL d2d_array_reserve(void **elements, size_t *capacity, size_t count, size_t size)
 {
@@ -1028,6 +1076,15 @@ static inline const char *debug_d2d_ellipse(const D2D1_ELLIPSE *ellipse)
         return "(null)";
     return wine_dbg_sprintf("(%.8e, %.8e)[%.8e, %.8e]",
             ellipse->point.x, ellipse->point.y, ellipse->radiusX, ellipse->radiusY);
+}
+
+static inline const char *debug_d2d_matrix3x2_f(const D2D1_MATRIX_3X2_F *matrix)
+{
+    if (!matrix)
+        return "(null)";
+    return wine_dbg_sprintf("(%.4e, %.4e)-(%.4e, %.4e)-(%.4e, %.4e)", matrix->_11, matrix->_12, 
+                                                                    matrix->_21, matrix->_22,
+                                                                    matrix->_31, matrix->_32);
 }
 
 #endif /* __WINE_D2D1_PRIVATE_H */

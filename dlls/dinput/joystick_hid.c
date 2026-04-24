@@ -53,7 +53,7 @@
 WINE_DEFAULT_DEBUG_CHANNEL(dinput);
 
 DEFINE_GUID( GUID_DEVINTERFACE_WINEXINPUT,0x6c53d5fd,0x6480,0x440f,0xb6,0x18,0x47,0x67,0x50,0xc5,0xe1,0xa6 );
-DEFINE_GUID( hid_joystick_guid, 0x9e573edb, 0x7734, 0x11d2, 0x8d, 0x4a, 0x23, 0x90, 0x3f, 0xb6, 0xbd, 0xf7 );
+DEFINE_GUID( hid_joystick_guid, 0x00000000, 0x0000, 0x0000, 0x80, 0x01, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00 );
 DEFINE_GUID( device_path_guid, 0x00000000, 0x0000, 0x0000, 0x8d, 0x4a, 0x23, 0x90, 0x3f, 0xb6, 0xbd, 0xf8 );
 
 struct pid_control_report
@@ -1554,6 +1554,9 @@ static HRESULT hid_joystick_device_try_open( const WCHAR *path, HANDLE *device, 
     NTSTATUS status;
     UINT32 handle;
     USHORT count;
+    DWORD crc = 0;
+    WCHAR serial[MAX_PATH];
+
 
     device_file = CreateFileW( path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
                                NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED | FILE_FLAG_NO_BUFFERING, 0 );
@@ -1582,7 +1585,19 @@ static HRESULT hid_joystick_device_try_open( const WCHAR *path, HANDLE *device, 
     }
 
     instance->guidInstance = hid_joystick_guid;
-    instance->guidInstance.Data1 ^= handle;
+    crc = RtlComputeCrc32(crc, (const BYTE *)instance->tszInstanceName, wcslen(instance->tszInstanceName) * sizeof(WCHAR));
+    crc = RtlComputeCrc32(crc, (const BYTE *)instance->tszProductName, wcslen(instance->tszProductName) * sizeof(WCHAR));
+    memset(serial, 0, sizeof(serial));
+
+    if (HidD_GetSerialNumberString( device_file, serial, MAX_PATH * sizeof(WCHAR) )) {
+        crc = RtlComputeCrc32(crc, (const BYTE *)serial, wcslen(serial) * sizeof(WCHAR));
+    } else {
+        WARN("Couldn't get serial number\n");
+    }
+    instance->guidInstance.Data1 = crc;
+    instance->guidInstance.Data2 = attrs->VendorID;
+    instance->guidInstance.Data3 = attrs->ProductID;
+
     instance->guidProduct = dinput_pidvid_guid;
     instance->guidProduct.Data1 = MAKELONG( attrs->VendorID, attrs->ProductID );
     instance->guidFFDriver = GUID_NULL;
@@ -1776,6 +1791,28 @@ static HRESULT hid_joystick_device_open( int index, const GUID *guid, DIDEVICEIN
     lstrcpynW( device_path, detail->DevicePath, MAX_PATH );
     return DI_OK;
 }
+
+
+HRESULT hid_joystick_find_device( struct dinput *dinput, const GUID *rguidClass, const WCHAR * ptszname, GUID **out ) {
+
+    HIDD_ATTRIBUTES attrs = {.Size = sizeof(attrs)};
+    PHIDP_PREPARSED_DATA preparsed;
+    HIDP_CAPS caps;
+    HANDLE device;
+    HRESULT hr;
+    DIDEVICEINSTANCEW instance = {.dwSize = sizeof(DIDEVICEINSTANCEW)};
+
+    hr = hid_joystick_device_try_open( ptszname, &device, &preparsed,
+                                    &attrs, &caps, &instance, dinput->dwVersion );
+    TRACE("try_open result: %#lx; guid is %s", hr, debugstr_guid( &instance.guidInstance ));
+    if (hr == S_OK) {
+        **out = instance.guidInstance;
+        CloseHandle( device );
+        HidD_FreePreparsedData( preparsed );
+    }
+    return hr;
+}
+
 
 HRESULT hid_joystick_enum_device( DWORD type, DWORD flags, DIDEVICEINSTANCEW *instance, DWORD version, int index )
 {
